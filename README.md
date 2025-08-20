@@ -228,7 +228,7 @@ The application uses external CSS styling (`app/styles.css`) with the following 
 - Focus indicators for accessibility
 
 ### Color Scheme
-```css
+```
 Primary Background: #2d2d2d
 Button Background: #3a3a3a
 Button Hover: #4a4a4a
