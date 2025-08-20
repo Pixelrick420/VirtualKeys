@@ -3,20 +3,23 @@
 # VirtualKeys Setup Script for KDE Plasma Kubuntu
 # This script installs all dependencies, clones the repo, sets up venv, and creates desktop shortcut
 
-set -e  
+set -e  # Exit on any error
 
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
+# Configuration
 REPO_URL="https://github.com/Pixelrick420/VirtualKeys"
 APP_NAME="VirtualKeys"
 INSTALL_DIR="$HOME/Applications/$APP_NAME"
 DESKTOP_FILE="$HOME/Desktop/VirtualKeys.desktop"
 APPLICATIONS_DIR="$HOME/.local/share/applications"
 
+# Function to print colored output
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -33,28 +36,37 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Function to check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to install packages using apt with error handling
 install_package() {
     local package=$1
     if ! dpkg -l | grep -q "^ii  $package "; then
         print_status "Installing $package..."
-        sudo apt update >/dev/null 2>&1
-        sudo apt install -y "$package"
-        print_success "$package installed successfully"
+        if sudo apt update >/dev/null 2>&1 && sudo apt install -y "$package" 2>/dev/null; then
+            print_success "$package installed successfully"
+        else
+            print_warning "Failed to install $package - it may not be available in this Ubuntu version"
+            return 1
+        fi
     else
         print_status "$package is already installed"
     fi
+    return 0
 }
 
+# Function to check and install dependencies
 install_dependencies() {
     print_status "Checking and installing system dependencies..."
     
+    # Update package list
     print_status "Updating package list..."
     sudo apt update
     
+    # Check for git
     if ! command_exists git; then
         print_status "Git not found. Installing git..."
         install_package git
@@ -62,6 +74,7 @@ install_dependencies() {
         print_success "Git is already installed"
     fi
     
+    # Check for python3
     if ! command_exists python3; then
         print_status "Python3 not found. Installing python3..."
         install_package python3
@@ -69,6 +82,7 @@ install_dependencies() {
         print_success "Python3 is already installed"
     fi
     
+    # Check for pip
     if ! command_exists pip3; then
         print_status "pip3 not found. Installing python3-pip..."
         install_package python3-pip
@@ -76,6 +90,7 @@ install_dependencies() {
         print_success "pip3 is already installed"
     fi
     
+    # Check for python3-venv
     if ! python3 -c "import venv" 2>/dev/null; then
         print_status "python3-venv not found. Installing python3-venv..."
         install_package python3-venv
@@ -83,22 +98,58 @@ install_dependencies() {
         print_success "python3-venv is already available"
     fi
     
+    # Install additional dependencies that might be needed for PyQt5
     print_status "Installing additional dependencies for PyQt5..."
     install_package python3-dev
-    install_package python3-distutils
+    
+    # Check Ubuntu version for distutils package
+    ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "unknown")
+    if [[ "$ubuntu_version" =~ ^(18\.|19\.) ]]; then
+        # For older Ubuntu versions that still have python3-distutils
+        install_package python3-distutils
+    else
+        # For newer Ubuntu versions (20.04+), use python3-setuptools instead
+        print_status "Using python3-setuptools instead of deprecated python3-distutils..."
+        install_package python3-setuptools
+    fi
+    
     install_package build-essential
     
+    # Install Qt5 development libraries (needed for PyQt5)
+    print_status "Installing Qt5 development libraries..."
+    
+    # Core Qt5 packages
     install_package qtbase5-dev
     install_package qttools5-dev-tools
+    
+    # Additional Qt5 packages that might be needed (with correct package names)
+    # Check if python3-pyqt5 package exists before installing
+    if apt-cache search python3-pyqt5 | grep -q "python3-pyqt5 -"; then
+        install_package python3-pyqt5
+    else
+        print_warning "python3-pyqt5 system package not available, will rely on pip installation"
+    fi
+    
+    # Try to install additional PyQt5 components if available
+    if apt-cache search python3-pyqt5 | grep -q "python3-pyqt5-dev"; then
+        install_package python3-pyqt5-dev
+    fi
+    
+    # Additional libraries for PyQt5 compilation (if needed)
+    install_package pkg-config
+    install_package libgl1-mesa-dev
     
     print_success "All system dependencies installed successfully"
 }
 
+# Function to clone the repository
 clone_repository() {
     print_status "Setting up application directory..."
     
+    # Create Applications directory if it doesn't exist
     mkdir -p "$HOME/Applications"
     
+    # Remove existing installation if it exists
     if [ -d "$INSTALL_DIR" ]; then
         print_warning "Existing installation found. Removing..."
         rm -rf "$INSTALL_DIR"
@@ -115,62 +166,88 @@ clone_repository() {
     fi
 }
 
+# Function to setup virtual environment
 setup_virtual_environment() {
     print_status "Setting up Python virtual environment..."
     
     cd "$INSTALL_DIR"
-
+    
+    # Create virtual environment
     python3 -m venv venv
-
+    
+    # Activate virtual environment and install requirements
     source venv/bin/activate
     
     print_status "Upgrading pip in virtual environment..."
     pip install --upgrade pip
     
     print_status "Installing application requirements..."
+    
+    # First, try to use pip in the virtual environment
+    pip_success=false
     if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt
-    else
-        print_warning "requirements.txt not found. Installing PyQt5 manually..."
-        pip install PyQt5==5.15.11
+        print_status "Attempting to install from requirements.txt..."
+        if pip install -r requirements.txt 2>/dev/null; then
+            pip_success=true
+            print_success "Requirements installed successfully via pip"
+        else
+            print_warning "requirements.txt installation failed"
+        fi
+    fi
+    
+    # If pip installation failed or no requirements.txt, try manual PyQt5 installation
+    if [ "$pip_success" = false ]; then
+        print_status "Attempting manual PyQt5 installation via pip..."
+        if pip install PyQt5 2>/dev/null; then
+            pip_success=true
+            print_success "PyQt5 installed successfully via pip"
+        else
+            print_warning "PyQt5 pip installation failed"
+        fi
+    fi
+    
+    # If pip completely failed, we'll rely on system packages (if available)
+    if [ "$pip_success" = false ]; then
+        print_warning "Pip installation failed. Will attempt to use system PyQt5 packages."
+        print_status "Note: System PyQt5 will be used if available"
     fi
     
     deactivate
     print_success "Virtual environment setup completed"
 }
 
+# Function to create desktop shortcut
 create_desktop_shortcut() {
     print_status "Creating desktop shortcut..."
     
+    # Create desktop file content with fallback execution methods
     cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=VirtualKeys
 Comment=Virtual Keyboard for KDE Plasma
-Exec=bash -c "cd '$INSTALL_DIR' && source venv/bin/activate && python run.py"
-Icon=$INSTALL_DIR/app/icon.png
+Exec=bash -c "cd '$INSTALL_DIR' && bash launch_virtualkeys.sh"
+Icon=input-keyboard
 Terminal=false
 Categories=Utility;Accessibility;
 Keywords=keyboard;virtual;accessibility;
 StartupNotify=true
 EOF
+
+    # Make desktop file executable
     chmod +x "$DESKTOP_FILE"
     
+    # Also create shortcut in applications menu
     mkdir -p "$APPLICATIONS_DIR"
     cp "$DESKTOP_FILE" "$APPLICATIONS_DIR/VirtualKeys.desktop"
-    
-    if [ ! -f "$INSTALL_DIR/app/icon.png" ]; then
-        print_warning "Icon file not found. Creating a placeholder icon reference..."
-        sed -i "s|Icon=.*|Icon=input-keyboard|" "$DESKTOP_FILE"
-        sed -i "s|Icon=.*|Icon=input-keyboard|" "$APPLICATIONS_DIR/VirtualKeys.desktop"
-    fi
     
     print_success "Desktop shortcut created successfully"
     print_status "Shortcut location: $DESKTOP_FILE"
     print_status "Applications menu entry: $APPLICATIONS_DIR/VirtualKeys.desktop"
 }
 
+# Function to create a launcher script
 create_launcher_script() {
     print_status "Creating launcher script..."
     
@@ -181,28 +258,94 @@ create_launcher_script() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Activate virtual environment and run the application
-source venv/bin/activate
-python run.py
+# Try virtual environment first
+if [ -d "venv" ]; then
+    source venv/bin/activate
+    if python -c "import PyQt5.QtWidgets" 2>/dev/null; then
+        echo "Using virtual environment PyQt5"
+        python run.py
+        exit $?
+    else
+        echo "Virtual environment PyQt5 not working, trying system PyQt5..."
+        deactivate
+    fi
+fi
+
+# Try system PyQt5 runner if it exists
+if [ -f "run_with_system_pyqt5.py" ]; then
+    echo "Using system PyQt5"
+    python3 run_with_system_pyqt5.py
+    exit $?
+fi
+
+# Fallback to regular run
+echo "Attempting standard launch..."
+if [ -d "venv" ]; then
+    source venv/bin/activate
+fi
+python run.py 2>/dev/null || python3 run.py
 EOF
 
     chmod +x "$INSTALL_DIR/launch_virtualkeys.sh"
     print_success "Launcher script created: $INSTALL_DIR/launch_virtualkeys.sh"
 }
 
+# Function to test the installation
 test_installation() {
     print_status "Testing installation..."
     
     cd "$INSTALL_DIR"
     source venv/bin/activate
     
-    if python -c "import PyQt5.QtWidgets; print('PyQt5 import successful')" 2>/dev/null; then
-        print_success "PyQt5 installation verified"
-    else
-        print_error "PyQt5 installation test failed"
-        return 1
+    cd "$INSTALL_DIR"
+    source venv/bin/activate
+    
+    # Test PyQt5 in virtual environment first
+    if python -c "import PyQt5.QtWidgets; print('PyQt5 venv import successful')" 2>/dev/null; then
+        print_success "PyQt5 installation verified in virtual environment"
+        deactivate
+        return 0
     fi
     
+    print_warning "PyQt5 not working in virtual environment. Testing system installation..."
+    deactivate
+    
+    # Test system PyQt5
+    if python3 -c "import PyQt5.QtWidgets; print('System PyQt5 working')" 2>/dev/null; then
+        print_success "System PyQt5 installation verified"
+        
+        # Create system PyQt5 integration
+        cd "$INSTALL_DIR"
+        cat > run_with_system_pyqt5.py << 'EOF'
+#!/usr/bin/env python3
+import sys
+import os
+
+# Add system site-packages for PyQt5
+sys.path.insert(0, '/usr/lib/python3/dist-packages')
+sys.path.insert(0, '/usr/local/lib/python3/dist-packages')
+
+# Import and run the main application
+if __name__ == "__main__":
+    from app.keyboard import VirtualKeyboard
+    from PyQt5.QtWidgets import QApplication
+    
+    app = QApplication([])
+    app.setStyle('Fusion')
+    keyboard = VirtualKeyboard()
+    keyboard.show()
+    app.exec_()
+EOF
+        chmod +x run_with_system_pyqt5.py
+        print_success "Created system PyQt5 runner script"
+        return 0
+    fi
+    
+    print_error "PyQt5 installation verification failed completely"
+    print_error "Neither virtual environment nor system PyQt5 is working"
+    return 1
+    
+    # Test if the main script exists and is readable
     if [ -f "run.py" ] && [ -r "run.py" ]; then
         print_success "Main application script found and accessible"
     else
@@ -214,20 +357,24 @@ test_installation() {
     print_success "Installation test completed successfully"
 }
 
+# Main execution
 main() {
     print_status "Starting VirtualKeys installation..."
     echo "=================================="
     
+    # Check if running as root
     if [ "$EUID" -eq 0 ]; then
         print_error "Please do not run this script as root (don't use sudo)"
         exit 1
     fi
     
+    # Check if sudo is available
     if ! command_exists sudo; then
         print_error "sudo is required but not installed. Please install sudo first."
         exit 1
     fi
     
+    # Verify sudo access
     print_status "Checking sudo access..."
     if ! sudo -n true 2>/dev/null; then
         print_warning "This script requires sudo access to install system packages."
@@ -235,6 +382,7 @@ main() {
         sudo -v
     fi
     
+    # Execute installation steps
     install_dependencies
     clone_repository
     setup_virtual_environment
@@ -261,5 +409,8 @@ main() {
     print_status "Installation log completed at $(date)"
 }
 
+# Handle script interruption
 trap 'print_error "Installation interrupted by user"; exit 130' INT
+
+# Run main function
 main "$@"
